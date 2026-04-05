@@ -1,10 +1,10 @@
 [build-system]
-requires = ["scikit-build-core", "pybind11"]
+requires = ["scikit-build-core", "pybind11", "setuptools-scm"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "pyyoga"
-version = "0.0.0"
+dynamic = ["version"]
 description = "Python bindings for Facebook Yoga flexbox layout engine"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,3 +28,5 @@ Repository = "https://github.com/davidbrochart/pyyoga"
 [tool.scikit-build]
 cmake.minimum-version = "3.18"
 wheel.packages = ["src/pyyoga"]
+metadata.version.provider = "scikit-build-core.metadata.setuptools_scm"
+sdist.include = ["src/bindings.cpp", "tests/*"]
