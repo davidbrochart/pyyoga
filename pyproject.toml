@@ -26,7 +26,7 @@ Homepage = "https://github.com/davidbrochart/pyyoga"
 Repository = "https://github.com/davidbrochart/pyyoga"
 
 [tool.scikit-build]
-cmake.minimum-version = "3.18"
+cmake.version = ">=3.18"
+experimental = true
 wheel.packages = ["src/pyyoga"]
-metadata.version.provider = "scikit-build-core.metadata.setuptools_scm"
-sdist.include = ["src/bindings.cpp", "tests/*"]
+metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"

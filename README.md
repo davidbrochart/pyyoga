@@ -1,5 +1,7 @@
 # pyyoga
 
+[![Tests](https://github.com/davidbrochart/pyyoga/actions/workflows/test.yml/badge.svg)](https://github.com/davidbrochart/pyyoga/actions/workflows/test.yml)
+
 Python bindings for [Facebook Yoga](https://github.com/facebook/yoga) flexbox layout engine.
 
 ## Installation

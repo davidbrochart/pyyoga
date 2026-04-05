@@ -7,19 +7,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(FETCHCONTENT_QUIET OFF)
 include(FetchContent)
 
-FetchContent_Declare(
-    pybind11
-    GIT_REPOSITORY https://github.com/pybind/pybind11.git
-    GIT_TAG v2.13.6
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(pybind11)
+find_package(pybind11 CONFIG)
+
+if(NOT pybind11_FOUND)
+    FetchContent_Declare(
+        pybind11
+        URL https://github.com/pybind/pybind11/archive/refs/tags/v2.13.6.zip
+    )
+    FetchContent_MakeAvailable(pybind11)
+endif()
 
 FetchContent_Declare(
     yoga
-    GIT_REPOSITORY https://github.com/facebook/yoga.git
-    GIT_TAG v3.2.1
-    GIT_SHALLOW TRUE
+    URL https://github.com/facebook/yoga/archive/refs/tags/v3.2.1.zip
 )
 FetchContent_MakeAvailable(yoga)
 
