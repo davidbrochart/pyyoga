@@ -1,7 +1,7 @@
 """Pythonic wrapper for Facebook Yoga layout engine."""
 
 import math
-from typing import Optional, List, Tuple, Any, Callable
+from typing import Optional, List, Tuple, Any, Callable, Union
 from ._pyyoga import (
     Node as _Node,
     Config as _Config,
@@ -78,14 +78,40 @@ class YogaValue:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, YogaValue):
             return False
-        return self.value == other.value and self.unit == other.unit
+        return math.isclose(self.value, other.value, rel_tol=1e-5) if (not math.isnan(self.value) and not math.isnan(other.value)) else (math.isnan(self.value) == math.isnan(other.value)) and self.unit == other.unit
+
+    def __float__(self) -> float:
+        return self.value
 
 
-def _to_yoga_value(val: Optional[float]) -> float:
+def _parse_value(val: Any) -> Tuple[float, Unit]:
+    if val is None or val == "undefined":
+        return UNDEFINED, Unit.Undefined
+    if val == "auto":
+        return 0.0, Unit.Auto
+    if isinstance(val, str) and val.endswith("%"):
+        return float(val[:-1]), Unit.Percent
+    if isinstance(val, YogaValue):
+        return val.value, val.unit
+    if isinstance(val, (int, float)):
+        return float(val), Unit.Point
+    raise ValueError(f"Invalid Yoga value: {val}")
+
+
+def _to_yoga_value(val: Any) -> float:
     """Convert Python value to Yoga float (using NaN for undefined)."""
-    if val is None:
+    if val is None or val == "undefined":
         return UNDEFINED
-    return val
+    if val == "auto":
+        # In calculate_layout, 'auto' is not usually a valid input for width/height,
+        # but Yoga uses UNDEFINED for 'unconstrained'.
+        return UNDEFINED
+    if isinstance(val, str) and val.endswith("%"):
+        # calculate_layout doesn't typically take percentages directly as constraints
+        return float(val[:-1])
+    if isinstance(val, (int, float)):
+        return float(val)
+    return UNDEFINED
 
 
 def _from_yoga_value(yg_val: _Value) -> YogaValue:
@@ -149,6 +175,7 @@ class Node:
         self._children: List[Node] = []
         self._parent: Optional[Node] = None
         self._measure_func: Optional[Callable] = None
+        self._dirtied_func: Optional[Callable] = None
 
     @property
     def parent(self) -> Optional["Node"]:
@@ -162,16 +189,21 @@ class Node:
     def child_count(self) -> int:
         return self._node.get_child_count()
 
-    def add_child(self, child: "Node", index: Optional[int] = None):
+    def get_child(self, index: int) -> "Node":
+        return self._children[index]
+
+    def insert_child(self, child: "Node", index: int):
         if child._parent is not None:
             child._parent.remove_child(child)
-        if index is not None:
-            self._node.insert_child(child._node, index)
-            self._children.insert(index, child)
-        else:
-            self._node.insert_child(child._node, len(self._children))
-            self._children.append(child)
+        self._node.insert_child(child._node, index)
+        self._children.insert(index, child)
         child._parent = self
+
+    def add_child(self, child: "Node", index: Optional[int] = None):
+        if index is not None:
+            self.insert_child(child, index)
+        else:
+            self.insert_child(child, len(self._children))
 
     def remove_child(self, child: "Node"):
         self._node.remove_child(child._node)
@@ -191,17 +223,33 @@ class Node:
         new_node._children = []
         new_node._parent = None
         new_node._measure_func = None
+        new_node._dirtied_func = None
         return new_node
+
+    def copy_style(self, other: "Node"):
+        self._node.copy_style(other._node)
+
+    def free(self):
+        self._node.free()
+        self._children.clear()
+        self._parent = None
+
+    def free_recursive(self):
+        for child in list(self._children):
+            child.free_recursive()
+        self.free()
 
     def reset(self):
         self._node.reset()
         self._children.clear()
         self._parent = None
+        self._measure_func = None
+        self._dirtied_func = None
 
     def calculate_layout(
         self,
-        width: Optional[float] = None,
-        height: Optional[float] = None,
+        width: Any = None,
+        height: Any = None,
         direction: Direction = Direction.LTR,
     ):
         self._node.calculate_layout(
@@ -224,6 +272,19 @@ class Node:
     @has_new_layout.setter
     def has_new_layout(self, value: bool):
         self._node.set_has_new_layout(value)
+
+    def mark_layout_seen(self):
+        self._node.set_has_new_layout(False)
+
+    @property
+    def is_reference_baseline(self) -> bool:
+        return self._node.is_reference_baseline()
+
+    @is_reference_baseline.setter
+    def is_reference_baseline(self, value: bool):
+        self._node.set_is_reference_baseline(value)
+
+    # Layout properties (Computed)
 
     @property
     def layout_left(self) -> float:
@@ -266,7 +327,48 @@ class Node:
     def layout_padding(self, edge: Edge) -> float:
         return self._node.get_layout_padding(edge)
 
+    # JS Aliases for Layout
+    def get_computed_left(self) -> float: return self.layout_left
+    def get_computed_top(self) -> float: return self.layout_top
+    def get_computed_right(self) -> float: return self.layout_right
+    def get_computed_bottom(self) -> float: return self.layout_bottom
+    def get_computed_width(self) -> float: return self.layout_width
+    def get_computed_height(self) -> float: return self.layout_height
+    def get_computed_layout(self) -> dict:
+        return {
+            "left": self.layout_left,
+            "top": self.layout_top,
+            "right": self.layout_right,
+            "bottom": self.layout_bottom,
+            "width": self.layout_width,
+            "height": self.layout_height,
+        }
+    def get_computed_margin(self, edge: Edge) -> float: return self.layout_margin(edge)
+    def get_computed_border(self, edge: Edge) -> float: return self.layout_border(edge)
+    def get_computed_padding(self, edge: Edge) -> float: return self.layout_padding(edge)
+
     # Style properties
+
+    def _set_style_unit_value(self, name: str, value: Any, edge: Optional[Edge] = None):
+        val, unit = _parse_value(value)
+        if edge is not None:
+            if unit == Unit.Point:
+                getattr(self._node, f"set_{name}")(edge, val)
+            elif unit == Unit.Percent:
+                getattr(self._node, f"set_{name}_percent")(edge, val)
+            elif unit == Unit.Auto:
+                getattr(self._node, f"set_{name}_auto")(edge)
+            elif unit == Unit.Undefined:
+                 getattr(self._node, f"set_{name}")(edge, UNDEFINED)
+        else:
+            if unit == Unit.Point:
+                getattr(self._node, f"set_{name}")(val)
+            elif unit == Unit.Percent:
+                getattr(self._node, f"set_{name}_percent")(val)
+            elif unit == Unit.Auto:
+                getattr(self._node, f"set_{name}_auto")()
+            elif unit == Unit.Undefined:
+                 getattr(self._node, f"set_{name}")(UNDEFINED)
 
     @property
     def flex_direction(self) -> FlexDirection:
@@ -369,59 +471,59 @@ class Node:
         return _from_yoga_value(self._node.get_flex_basis())
 
     @flex_basis.setter
-    def flex_basis(self, value: float):
-        self._node.set_flex_basis(value)
+    def flex_basis(self, value: Any):
+        self._set_style_unit_value("flex_basis", value)
 
     @property
     def width(self) -> YogaValue:
         return _from_yoga_value(self._node.get_width())
 
     @width.setter
-    def width(self, value: float):
-        self._node.set_width(value)
+    def width(self, value: Any):
+        self._set_style_unit_value("width", value)
 
     @property
     def height(self) -> YogaValue:
         return _from_yoga_value(self._node.get_height())
 
     @height.setter
-    def height(self, value: float):
-        self._node.set_height(value)
+    def height(self, value: Any):
+        self._set_style_unit_value("height", value)
 
     @property
     def min_width(self) -> YogaValue:
         return _from_yoga_value(self._node.get_min_width())
 
     @min_width.setter
-    def min_width(self, value: float):
-        self._node.set_min_width(value)
+    def min_width(self, value: Any):
+        self._set_style_unit_value("min_width", value)
 
     @property
     def min_height(self) -> YogaValue:
         return _from_yoga_value(self._node.get_min_height())
 
     @min_height.setter
-    def min_height(self, value: float):
-        self._node.set_min_height(value)
+    def min_height(self, value: Any):
+        self._set_style_unit_value("min_height", value)
 
     @property
     def max_width(self) -> YogaValue:
         return _from_yoga_value(self._node.get_max_width())
 
     @max_width.setter
-    def max_width(self, value: float):
-        self._node.set_max_width(value)
+    def max_width(self, value: Any):
+        self._set_style_unit_value("max_width", value)
 
     @property
     def max_height(self) -> YogaValue:
         return _from_yoga_value(self._node.get_max_height())
 
     @max_height.setter
-    def max_height(self, value: float):
-        self._node.set_max_height(value)
+    def max_height(self, value: Any):
+        self._set_style_unit_value("max_height", value)
 
-    def set_position(self, edge: Edge, value: float):
-        self._node.set_position(edge, value)
+    def set_position(self, edge: Edge, value: Any):
+        self._set_style_unit_value("position", value, edge)
 
     def set_position_percent(self, edge: Edge, value: float):
         self._node.set_position_percent(edge, value)
@@ -432,8 +534,8 @@ class Node:
     def get_position(self, edge: Edge) -> YogaValue:
         return _from_yoga_value(self._node.get_position(edge))
 
-    def set_margin(self, edge: Edge, value: float):
-        self._node.set_margin(edge, value)
+    def set_margin(self, edge: Edge, value: Any):
+        self._set_style_unit_value("margin", value, edge)
 
     def set_margin_percent(self, edge: Edge, value: float):
         self._node.set_margin_percent(edge, value)
@@ -444,8 +546,8 @@ class Node:
     def get_margin(self, edge: Edge) -> YogaValue:
         return _from_yoga_value(self._node.get_margin(edge))
 
-    def set_padding(self, edge: Edge, value: float):
-        self._node.set_padding(edge, value)
+    def set_padding(self, edge: Edge, value: Any):
+        self._set_style_unit_value("padding", value, edge)
 
     def set_padding_percent(self, edge: Edge, value: float):
         self._node.set_padding_percent(edge, value)
@@ -459,8 +561,8 @@ class Node:
     def get_border(self, edge: Edge) -> float:
         return self._node.get_border(edge)
 
-    def set_gap(self, gutter: Gutter, value: float):
-        self._node.set_gap(gutter, value)
+    def set_gap(self, gutter: Gutter, value: Any):
+        self._set_style_unit_value("gap", value, gutter)
 
     def set_gap_percent(self, gutter: Gutter, value: float):
         self._node.set_gap_percent(gutter, value)
@@ -505,19 +607,24 @@ class Node:
         func: Optional[Callable[[float, int, float, int], Tuple[float, float]]],
     ):
         self._measure_func = func
-        if func is not None:
-
-            def adapter(width, width_mode, height, height_mode):
-                return func(width, width_mode, height, height_mode)
-
-            self._measure_adapter = adapter
-            self._node.set_measure_func(adapter)
-        else:
-            self._measure_adapter = None
-            self._node.set_measure_func(None)
+        self._node.set_measure_func(func)
 
     def has_measure_func(self) -> bool:
         return self._node.has_measure_func()
+
+    def set_dirtied_func(self, func: Optional[Callable[["Node"], None]]):
+        self._dirtied_func = func
+        if func is not None:
+            def adapter():
+                func(self)
+            self._dirtied_adapter = adapter
+            self._node.set_dirtied_func(adapter)
+        else:
+            self._dirtied_adapter = None
+            self._node.set_dirtied_func(None)
+
+    def has_dirtied_func(self) -> bool:
+        return self._node.has_dirtied_func()
 
     def __repr__(self) -> str:
         return (

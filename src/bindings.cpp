@@ -12,6 +12,7 @@ namespace py = pybind11;
 
 static std::mutex g_measure_mutex;
 static std::unordered_map<YGNodeRef, py::object> g_measure_funcs;
+static std::unordered_map<YGNodeRef, py::object> g_dirtied_funcs;
 
 static YGSize measure_adapter(
     YGNodeConstRef node,
@@ -42,6 +43,15 @@ static YGSize measure_adapter(
     return size;
 }
 
+static void dirtied_adapter(YGNodeConstRef node) {
+    py::gil_scoped_acquire acquire;
+    std::lock_guard<std::mutex> lock(g_measure_mutex);
+    auto it = g_dirtied_funcs.find(const_cast<YGNodeRef>(node));
+    if (it != g_dirtied_funcs.end()) {
+        it->second();
+    }
+}
+
 struct NodeHolder {
     YGNodeRef ptr;
     bool owned;
@@ -53,6 +63,7 @@ struct NodeHolder {
         if (owned && ptr) {
             std::lock_guard<std::mutex> lock(g_measure_mutex);
             g_measure_funcs.erase(ptr);
+            g_dirtied_funcs.erase(ptr);
             YGNodeFree(ptr);
         }
     }
@@ -255,6 +266,9 @@ PYBIND11_MODULE(_pyyoga, m) {
         .def("clone", [](NodeHolder* self) {
             return new NodeHolder(YGNodeClone(self->ptr), true);
         })
+        .def("copy_style", [](NodeHolder* self, NodeHolder* other) {
+            YGNodeCopyStyle(self->ptr, other->ptr);
+        })
         .def("free", [](NodeHolder* self) {
             if (self->ptr) {
                 YGNodeFree(self->ptr);
@@ -290,6 +304,12 @@ PYBIND11_MODULE(_pyyoga, m) {
         })
         .def("mark_dirty", [](NodeHolder* self) {
             YGNodeMarkDirty(self->ptr);
+        })
+        .def("set_is_reference_baseline", [](NodeHolder* self, bool is_reference_baseline) {
+            YGNodeSetIsReferenceBaseline(self->ptr, is_reference_baseline);
+        })
+        .def("is_reference_baseline", [](NodeHolder* self) {
+            return YGNodeIsReferenceBaseline(self->ptr);
         })
         .def("insert_child", [](NodeHolder* self, NodeHolder* child, size_t index) {
             YGNodeInsertChild(self->ptr, child->ptr, index);
@@ -587,6 +607,20 @@ PYBIND11_MODULE(_pyyoga, m) {
         })
         .def("has_measure_func", [](NodeHolder* self) {
             return YGNodeHasMeasureFunc(self->ptr);
+        })
+        .def("set_dirtied_func", [](NodeHolder* self, py::object func) {
+            if (func.is_none()) {
+                std::lock_guard<std::mutex> lock(g_measure_mutex);
+                g_dirtied_funcs.erase(self->ptr);
+                YGNodeSetDirtiedFunc(self->ptr, nullptr);
+            } else {
+                std::lock_guard<std::mutex> lock(g_measure_mutex);
+                g_dirtied_funcs[self->ptr] = func;
+                YGNodeSetDirtiedFunc(self->ptr, dirtied_adapter);
+            }
+        })
+        .def("has_dirtied_func", [](NodeHolder* self) {
+            return YGNodeGetDirtiedFunc(self->ptr) != nullptr;
         });
 
     m.def("float_is_undefined", [](float value) {
