@@ -28,14 +28,15 @@ static YGSize measure_adapter(
         YGSize size;
         if (py::isinstance<py::tuple>(result)) {
             py::tuple t = result.cast<py::tuple>();
-            size.width = t[0].cast<float>();
-            size.height = t[1].cast<float>();
-        } else if (py::hasattr(result, "width") && py::hasattr(result, "height")) {
-            size.width = result.attr("width").cast<float>();
-            size.height = result.attr("height").cast<float>();
+            size.width = t.size() > 0 ? t[0].cast<float>() : 0.0f;
+            size.height = t.size() > 1 ? t[1].cast<float>() : 0.0f;
+        } else if (py::isinstance<py::dict>(result)) {
+            py::dict d = result.cast<py::dict>();
+            size.width = d.contains("width") ? d["width"].cast<float>() : 0.0f;
+            size.height = d.contains("height") ? d["height"].cast<float>() : 0.0f;
         } else {
-            size.width = 0;
-            size.height = 0;
+            size.width = py::hasattr(result, "width") ? result.attr("width").cast<float>() : 0.0f;
+            size.height = py::hasattr(result, "height") ? result.attr("height").cast<float>() : 0.0f;
         }
         return size;
     }
